@@ -30,6 +30,7 @@ func main() {
 	var logs []node.NodeLog
 
 	node := node.Node{
+		ID:        port,
 		Peers:     peers,
 		Term:      1,
 		Logs:      logs,

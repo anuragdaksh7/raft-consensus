@@ -2,11 +2,11 @@ package transport
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
-	"strings"
-	"time"
 )
 
 type FixMessage string
@@ -16,42 +16,21 @@ const (
 	LeaderResponse    FixMessage = "YES!"
 )
 
-func main() {
-	listner, err := net.Listen("tcp", ":8090")
-	if err != nil {
-		log.Fatal("Error listening:", err)
-	}
-
-	defer listner.Close()
-
-	for {
-
-		conn, err := listner.Accept()
-		if err != nil {
-			log.Println("Error accepting conn:", err)
-			continue
-		}
-
-		go handleConnection(conn)
-	}
+type Message struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
 }
 
-func handleConnection(conn net.Conn) {
-	defer conn.Close()
+type RequestVoteRequest struct {
+	Term         int    `json:"term"`
+	CandidateID  string `json:"candidate_id"`
+	LastLogIndex int    `json:"last_log_index"`
+	LastLogTerm  int    `json:"last_log_term"`
+}
 
-	reader := bufio.NewReader(conn)
-	message, err := reader.ReadString('\n')
-	if err != nil {
-		log.Printf("Read error: %v", err)
-		return
-	}
-
-	ackMsg := strings.ToUpper(strings.TrimSpace(message))
-	response := fmt.Sprintf("ACK: %s\n", ackMsg)
-	_, err = conn.Write([]byte(response))
-	if err != nil {
-		log.Printf("Server write error: %v", err)
-	}
+type RequestVoteResponse struct {
+	Term        uint64 `json:"term"`
+	VoteGranted bool   `json:"vote_granted"`
 }
 
 func StartServer(address string) (net.Listener, error) {
@@ -64,44 +43,63 @@ func StartServer(address string) (net.Listener, error) {
 	return listner, nil
 }
 
-// Ping for leader active check
-func PingLeader(conn net.Conn) error {
-	defer conn.Close()
-
-	conn.SetDeadline(time.Now().Add(3 * time.Second))
-
-	_, err := conn.Write([]byte(LeaderPingMessage + "\n"))
-	if err != nil {
-		return err
-	}
-
-	_, err = bufio.NewReader(conn).ReadString('\n')
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // generic for parsing tcp message
-func ParseMessage(conn net.Conn) (string, error) {
-	defer conn.Close()
-
+func ParseMessage(conn net.Conn) (Message, error) {
 	reader := bufio.NewReader(conn)
-	message, err := reader.ReadString('\n')
+
+	data, err := reader.ReadBytes('\n')
 	if err != nil {
-		log.Printf("Read error: %v", err)
-		return "", err
+		return Message{}, err
+	}
+
+	if len(data) > 1024*1024 {
+		return Message{}, fmt.Errorf("message too large")
+	}
+
+	var message Message
+
+	err = json.Unmarshal(data, &message)
+	if err != nil {
+		return Message{}, err
 	}
 
 	return message, nil
 }
 
-// leader reply for ping check
-func LeaderPingReply(conn net.Conn) error {
-	_, err := conn.Write([]byte(LeaderResponse + "\n"))
+func SendMessage(
+	conn net.Conn,
+	messageType string,
+	payload any,
+) error {
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
+
+	message := Message{
+		Type:    messageType,
+		Payload: data,
+	}
+
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+
+	encoded = append(encoded, '\n')
+
+	for len(encoded) > 0 {
+		n, err := conn.Write(encoded)
+		if err != nil {
+			return err
+		}
+
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+
+		encoded = encoded[n:]
+	}
+
 	return nil
 }
