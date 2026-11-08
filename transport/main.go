@@ -33,6 +33,26 @@ type RequestVoteResponse struct {
 	VoteGranted bool `json:"vote_granted"`
 }
 
+type AppendEntriesRequest struct {
+	Term         int       `json:"term"`
+	LeaderID     string    `json:"leader_id"`
+	PrevLogIndex int       `json:"prev_log_index"`
+	PrevLogTerm  int       `json:"prev_log_term"`
+	Entries      []NodeLog `json:"entries"`
+	LeaderCommit int       `json:"leader_commit"`
+}
+
+type AppendEntriesResponse struct {
+	Term    int  `json:"term"`
+	Success bool `json:"success"`
+}
+
+type NodeLog struct {
+	Index   uint64 `json:"index"`
+	Term    uint64 `json:"term"`
+	Command string `json:"command"`
+}
+
 func StartServer(address string) (net.Listener, error) {
 	listner, err := net.Listen("tcp", ":"+address)
 	if err != nil {

@@ -23,7 +23,7 @@ func main() {
 
 	for _, val := range allNodes {
 		if val != port {
-			peers = append(peers, val)
+			peers = append(peers, "localhost:"+val)
 		}
 	}
 
