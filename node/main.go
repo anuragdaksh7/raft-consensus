@@ -41,7 +41,8 @@ type Node struct {
 	VotedFor  string
 	Role      NodeRole
 
-	mu sync.Mutex
+	mu         sync.Mutex
+	electionMu sync.Mutex
 }
 
 func (n *Node) Start(address string) {
@@ -102,9 +103,12 @@ func (n *Node) handleConnection(conn net.Conn) {
 
 func (n *Node) leaderPollingJob() {
 	interval := time.Duration(n.Timeoutms) * time.Millisecond
-	leader := n.Leader
 
 	for range time.Tick(interval) {
+		n.mu.Lock()
+		leader := n.Leader
+		n.mu.Unlock()
+
 		if leader == nil || *leader == nil {
 			log.Println("leader not found !start election!")
 			n.election()
@@ -113,19 +117,88 @@ func (n *Node) leaderPollingJob() {
 		err := transport.SendMessage(*leader, "leader_ping", struct{}{})
 		if err != nil {
 			log.Println("leader lost connection !reset leader!")
+			n.mu.Lock()
 			n.Leader = nil
+			n.mu.Unlock()
 		}
 		log.Println("leader alive")
 	}
 }
 
 func (n *Node) election() {
-	// numNodes := len(n.Peers)
-	// majority := numNodes/2 + 1
+	n.electionMu.Lock()
+	defer n.electionMu.Unlock()
 
-	n.Votes = 1
+	numNodes := len(n.Peers) + 1
+	majority := numNodes/2 + 1
+
+	n.mu.Lock()
+	n.VotedFor = n.ID
 	n.Term += 1
+	n.Role = Candidate
+	electionTerm := n.Term
+	lastLogIndex := -1
+	lastLogTerm := -1
+	if len(n.Logs) > 0 {
+		lastLogIndex = int(n.Logs[len(n.Logs)-1].Index)
+		lastLogTerm = int(n.Logs[len(n.Logs)-1].Term)
+	}
+	n.Votes = 1
+	n.mu.Unlock()
 
+	req := transport.RequestVoteRequest{
+		Term:         electionTerm,
+		CandidateID:  n.ID,
+		LastLogIndex: lastLogIndex,
+		LastLogTerm:  lastLogTerm,
+	}
+
+	type voteResult struct {
+		peer string
+		res  transport.RequestVoteResponse
+		err  error
+	}
+
+	results := make(chan voteResult, len(n.Peers))
+	for _, peer := range n.Peers {
+		go func(peer string) {
+			res, err := n.RequestVote(peer, req)
+			results <- voteResult{peer: peer, res: res, err: err}
+		}(peer)
+	}
+
+	for range n.Peers {
+		result := <-results
+		if result.err != nil {
+			log.Printf("error requesting vote from %s: %v", result.peer, result.err)
+			continue
+		}
+
+		n.mu.Lock()
+		switch {
+		case result.res.Term > n.Term:
+			n.Term = result.res.Term
+			n.Role = Follower
+			n.VotedFor = ""
+			n.Votes = 0
+		case result.res.Term == electionTerm &&
+			n.Term == electionTerm &&
+			n.Role == Candidate &&
+			result.res.VoteGranted:
+			n.Votes++
+			fmt.Printf("%s voted for %s\n", result.peer, n.ID)
+		case result.res.Term == electionTerm && !result.res.VoteGranted:
+			fmt.Printf("%s did not vote for %s\n", result.peer, n.ID)
+		}
+		n.mu.Unlock()
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.Role == Candidate && n.Term == electionTerm && n.Votes >= majority {
+		n.Role = Leader
+		// TODO: broadcast leader
+	}
 }
 
 func (n *Node) RequestVote(peerAddress string, req transport.RequestVoteRequest) (
@@ -187,6 +260,7 @@ func (n *Node) HandleRequestVote(req transport.RequestVoteRequest) transport.Req
 	} else if n.Term < req.Term {
 		n.Term = req.Term
 		n.VotedFor = ""
+		n.Role = Follower
 	}
 
 	// check if already voted
