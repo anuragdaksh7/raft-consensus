@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"raft/transport"
+	"sync"
 	"time"
 )
 
@@ -19,6 +20,14 @@ type NodeState struct {
 	Value int
 }
 
+type NodeRole string
+
+const (
+	Leader    NodeRole = "LEADER"
+	Follower  NodeRole = "FOLLOWER"
+	Candidate NodeRole = "CANDIDATE"
+)
+
 type Node struct {
 	ID        string
 	Peers     []string
@@ -29,6 +38,10 @@ type Node struct {
 	Leader    *net.Conn
 	Votes     int
 	State     NodeState
+	VotedFor  string
+	Role      NodeRole
+
+	mu sync.Mutex
 }
 
 func (n *Node) Start(address string) {
@@ -161,4 +174,55 @@ func (n *Node) RequestVote(peerAddress string, req transport.RequestVoteRequest)
 	return response, nil
 }
 
-func (n *Node) HandleRequestVote(req transport.RequestVoteRequest) transport.RequestVoteResponse {}
+func (n *Node) HandleRequestVote(req transport.RequestVoteRequest) transport.RequestVoteResponse {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// check election term
+	if n.Term > req.Term {
+		return transport.RequestVoteResponse{
+			Term:        n.Term,
+			VoteGranted: false,
+		}
+	} else if n.Term < req.Term {
+		n.Term = req.Term
+		n.VotedFor = ""
+	}
+
+	// check if already voted
+	if n.VotedFor != "" && n.VotedFor != req.CandidateID {
+		return transport.RequestVoteResponse{
+			Term:        n.Term,
+			VoteGranted: false,
+		}
+	}
+
+	followerLastLogIndex := -1
+	followerLastLogTerm := -1
+	if len(n.Logs) > 0 {
+		followerLastLogIndex = int(n.Logs[len(n.Logs)-1].Index)
+		followerLastLogTerm = int(n.Logs[len(n.Logs)-1].Term)
+	}
+
+	// check last log term
+	if followerLastLogTerm > req.LastLogTerm {
+		return transport.RequestVoteResponse{
+			Term:        n.Term,
+			VoteGranted: false,
+		}
+	} else if followerLastLogTerm == req.LastLogTerm {
+		if followerLastLogIndex > req.LastLogIndex {
+			return transport.RequestVoteResponse{
+				Term:        n.Term,
+				VoteGranted: false,
+			}
+		}
+	}
+
+	n.VotedFor = req.CandidateID
+
+	return transport.RequestVoteResponse{
+		Term:        n.Term,
+		VoteGranted: true,
+	}
+}

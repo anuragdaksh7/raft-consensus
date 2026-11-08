@@ -29,8 +29,8 @@ type RequestVoteRequest struct {
 }
 
 type RequestVoteResponse struct {
-	Term        uint64 `json:"term"`
-	VoteGranted bool   `json:"vote_granted"`
+	Term        int  `json:"term"`
+	VoteGranted bool `json:"vote_granted"`
 }
 
 func StartServer(address string) (net.Listener, error) {
